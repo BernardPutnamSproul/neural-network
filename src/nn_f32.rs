@@ -11,8 +11,6 @@ pub struct Network2 {
     weights: Vec<DMatrix<f32>>,
     weight_grad: Vec<DMatrix<f32>>,
     bias_grad: Vec<DVector<f32>>,
-
-    output_activation: bool,
 }
 
 impl Network2 {
@@ -61,8 +59,6 @@ impl Network2 {
             weight_grad: zip(&sizes[..sizes.len() - 1], &sizes[1..])
                 .map(|(x, y)| DMatrix::zeros(*y, *x))
                 .collect(),
-
-            output_activation: true,
         }
     }
 
@@ -244,15 +240,15 @@ impl Network2 {
         // that Python can use negative indices in lists.
         let b_len = self.bias_grad.len();
         let w_len = self.weight_grad.len();
-        let a_len = activations.len();
-        let zs_len = zs.len();
 
         for l in 2..self.num_layers {
             // let z = zs[zs_len - l].clone();
             let z = zs.pop().unwrap();
             // let sp = z.apply_into(|z| *z = relu_prime(*z));
             let sp = z.apply_into(A_PRIME);
-            delta = (&self.weights[w_len - l + 1].tr_mul(&delta)).component_mul(&sp);
+            delta = self.weights[w_len - l + 1]
+                .tr_mul(&delta)
+                .component_mul(&sp);
 
             self.bias_grad[b_len - l] += &delta;
             self.weight_grad[w_len - l] += &delta * &activations.pop().unwrap().transpose();

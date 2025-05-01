@@ -1,13 +1,13 @@
 use braille_rs::BrailleChar;
-use ndarray::{Array, Array1, Array3, ArrayBase, Axis};
+use nalgebra::DVector;
 use std::io::Read;
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Mnist {
-    pub test_images: Vec<ndarray::Array1<f64>>,
-    pub test_labels: Vec<ndarray::Array1<f64>>,
-    pub training_images: Vec<ndarray::Array1<f64>>,
-    pub training_labels: Vec<ndarray::Array1<f64>>,
+    pub test_images: Vec<DVector<f64>>,
+    pub test_labels: Vec<DVector<f64>>,
+    pub training_images: Vec<DVector<f64>>,
+    pub training_labels: Vec<DVector<f64>>,
 }
 
 type UResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -29,7 +29,7 @@ pub fn read(path: impl ToString) -> UResult<Mnist> {
     Ok(output)
 }
 
-fn parse1(mut handle: std::fs::File) -> UResult<Vec<Array1<f64>>> {
+fn parse1(mut handle: std::fs::File) -> UResult<Vec<DVector<f64>>> {
     assert!(read_header(&mut handle, 1)?);
 
     let mut tmp = vec![0u8; 4];
@@ -39,7 +39,7 @@ fn parse1(mut handle: std::fs::File) -> UResult<Vec<Array1<f64>>> {
     handle.read_to_end(&mut raw_bytes)?;
     let mut labels = Vec::new();
 
-    let empty = Array::zeros([10; 1]);
+    let empty = DVector::zeros(10);
 
     for byte in raw_bytes {
         let mut val = empty.clone();
@@ -50,7 +50,7 @@ fn parse1(mut handle: std::fs::File) -> UResult<Vec<Array1<f64>>> {
     Ok(labels)
 }
 
-fn parse3(mut handle: std::fs::File) -> UResult<Vec<Array1<f64>>> {
+fn parse3(mut handle: std::fs::File) -> UResult<Vec<DVector<f64>>> {
     assert!(read_header(&mut handle, 3)?);
 
     let mut tmp = vec![0u8; 3 * 4];
@@ -66,7 +66,7 @@ fn parse3(mut handle: std::fs::File) -> UResult<Vec<Array1<f64>>> {
 
     Ok(floats
         .chunks_exact(28 * 28)
-        .map(|chunk| Array1::from(chunk.to_vec()))
+        .map(|chunk| DVector::from(chunk.to_vec()))
         .collect())
 
     // Ok(Array::from_shape_vec(shape, raw)?)
