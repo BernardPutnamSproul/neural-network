@@ -1,0 +1,27 @@
+[package]
+name = "neural-network"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+braille-rs = "1.0.0"
+criterion = "0.5.1"
+indicatif = "0.17.9"
+nalgebra = "0.33.2"
+ndarray = "0.16.1"
+ndarray-rand = "0.15.0"
+rand = "0.9.1"
+rand_distr = "0.5.1"
+rayon = "1.10.0"
+rgb = "0.8.50"
+rsille = "2.3.1"
+tch = "0.18.1"
+textplots = "0.8.6"
+typenum = "1.17.0"
+
+
+
+[[bench]]
+harness = false
+name = "nalgebra"
