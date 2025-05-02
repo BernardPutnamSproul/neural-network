@@ -2,195 +2,69 @@ pub mod mnist;
 pub mod nn;
 pub mod nn_f32;
 
-use std::iter::zip;
-
-use nalgebra::{DMatrix, DVector};
-use rand::Rng;
-
-#[derive(Debug, Clone)]
-pub struct DataPoint {
-    pub inputs: Vec<f64>,
-    pub label: usize,
-    pub outs: Vec<f64>,
+#[repr(usize)]
+pub enum Activation {
+    Sigmoid = 0,
+    ReLU = 1,
+    Identity = 2,
+    SiLU = 3,
 }
 
-impl DataPoint {
-    pub fn new(inputs: Vec<f64>, label: usize, outputs: usize) -> Self {
-        let mut outs = vec![0.; outputs];
-        outs[label] = 1.;
+/// handle little macro so I don't have to write out functions for f32 and f64 types.
+macro_rules! twice {
+    ($x:expr) => {
+        ($x, $x)
+    };
+}
 
-        Self {
-            inputs,
-            label,
-            outs,
-        }
+type A32 = fn(&mut f32);
+type A64 = fn(&mut f64);
+type Zipped = (A32, A64);
+
+impl Activation {
+    const RELU: Zipped = twice!(|x| *x = x.max(0.0));
+    const DRELU: Zipped = twice!(|x| *x = if *x > 0. { 1. } else { 0. });
+
+    const SIGMOID: Zipped = twice!(|x| *x = 1.0 / (1.0 + (-*x).exp()));
+    const DSIGMOID: Zipped = twice!(|x| {
+        let tmp = (-*x).exp();
+        *x = (1. - (1.0 / (1.0 + tmp))) / (1.0 + tmp);
+    });
+
+    const IDENTITY: Zipped = twice!(|_x| ());
+    const DIDENTITY: Zipped = twice!(|x| *x = 1.);
+
+    const SILU: Zipped = twice!(|x| *x = *x / (1. + (-*x).exp()));
+    const DSILU: Zipped = twice!(|x| {
+        let tmp = (-*x).exp();
+        *x = (1. + tmp * (1. + *x)) / (1. + tmp).powi(2);
+    });
+
+    const LOOKUP: [Zipped; 4] = [Self::SIGMOID, Self::RELU, Self::IDENTITY, Self::SILU];
+    const DLOOKUP: [Zipped; 4] = [Self::DSIGMOID, Self::DRELU, Self::DIDENTITY, Self::DSILU];
+
+    pub const fn get_fun32(&self) -> A32 {
+        Self::LOOKUP[self.to_index()].0
     }
-}
 
-enum ActivationType {
-    Sigmoid,
-    ReLU,
-}
+    pub const fn get_fun64(&self) -> A64 {
+        Self::LOOKUP[self.to_index()].1
+    }
 
-impl ActivationType {
-    pub fn activation(&self) -> fn(&mut f64) {
+    pub const fn get_dir32(&self) -> A32 {
+        Self::DLOOKUP[self.to_index()].0
+    }
+
+    pub const fn get_dir64(&self) -> A64 {
+        Self::DLOOKUP[self.to_index()].1
+    }
+
+    const fn to_index(&self) -> usize {
         match self {
-            ActivationType::Sigmoid => |val: &mut f64| *val = 1. / (1. + (-*val).exp()),
-            ActivationType::ReLU => |val: &mut f64| *val = val.max(0.),
+            Activation::Sigmoid => 0,
+            Activation::ReLU => 1,
+            Activation::Identity => 2,
+            Activation::SiLU => 3,
         }
-    }
-}
-
-struct Layer {
-    weights: DMatrix<f64>,
-    biases: DVector<f64>,
-    activation: ActivationType,
-    weight_gradient: DMatrix<f64>,
-    biase_gradient: DVector<f64>,
-}
-
-impl Layer {
-    fn new(inputs: usize, outputs: usize) -> Self {
-        let mut rng = rand::thread_rng();
-        let mut function = |_: usize, _: usize| {
-            let x1: f64 = 1. - rng.gen::<f64>();
-            let x2: f64 = 1. - rng.gen::<f64>();
-
-            // (-2. * x1.log(10.)) * (2. * PI * x2).cos() / (inputs as f64).sqrt()
-            rng.gen_range(-1.0..=1.0) / (inputs as f64).sqrt()
-        };
-        Self {
-            weights: DMatrix::from_fn(outputs, inputs, &mut function),
-            weight_gradient: DMatrix::from_fn(outputs, inputs, &mut function),
-            biases: DVector::from_fn(outputs, &mut function),
-            biase_gradient: DVector::from_fn(outputs, &mut function),
-            activation: ActivationType::Sigmoid,
-        }
-    }
-}
-pub struct Network {
-    layers: Vec<Layer>,
-}
-
-impl Network {
-    pub fn new(layer_sizes: &[usize]) -> Self {
-        let layers = layer_sizes
-            .windows(2)
-            .map(|vals| Layer::new(vals[0], vals[1]))
-            .collect();
-
-        Self { layers }
-    }
-
-    pub fn classify(&self, inputs: &[f64]) -> usize {
-        self.calculate_outputs(inputs)
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.total_cmp(b))
-            .unwrap()
-            .0
-    }
-
-    pub fn calculate_outputs(&self, inputs: &[f64]) -> DVector<f64> {
-        let mut intermediate = DVector::from_column_slice(inputs);
-
-        for layer in self.layers.iter() {
-            intermediate = (&layer.weights) * intermediate;
-            intermediate += &layer.biases;
-            intermediate.apply(layer.activation.activation());
-        }
-        intermediate
-    }
-
-    pub fn learn<'a>(
-        &mut self,
-        training_data: impl Iterator<Item = &'a DataPoint> + Clone,
-        learn_rate: f64,
-    ) {
-        let h = 0.0001;
-
-        let start_cost = self.average_cost(training_data.clone());
-
-        for layer in 0..self.layers.len() {
-            for row in 0..self.layers[layer].weights.nrows() {
-                for column in 0..self.layers[layer].weights.ncols() {
-                    let i = (row, column);
-
-                    self.layers[layer].weights[i] -= h;
-                    let cost = self.average_cost(training_data.clone()) - start_cost;
-                    self.layers[layer].weight_gradient[i] += h;
-
-                    self.layers[layer].weight_gradient[i] -= cost / h;
-                }
-            }
-            for row in 0..self.layers[layer].biases.nrows() {
-                self.layers[layer].biases[row] -= h;
-                let cost = self.average_cost(training_data.clone()) - start_cost;
-
-                self.layers[layer].biases[row] += h;
-
-                self.layers[layer].biase_gradient[row] -= cost / h;
-            }
-        }
-
-        self.apply_gradients(learn_rate);
-    }
-
-    pub fn cost(&self, datum: &DataPoint) -> f64 {
-        let expected = datum.outs.as_slice();
-        let outputs = self.calculate_outputs(&datum.inputs);
-
-        zip(expected, &outputs)
-            .map(|(expected, output)| (output - expected) * (output - expected))
-            .sum::<f64>()
-    }
-
-    pub fn average_cost<'a, T: Iterator<Item = &'a DataPoint>>(&self, test_data: T) -> f64 {
-        let (len, sum) = test_data
-            .map(|datum| self.cost(datum))
-            .enumerate()
-            .reduce(|(_, a), (i, b)| (i, a + b))
-            .unwrap();
-
-        sum / len as f64
-    }
-
-    pub fn apply_gradients(&mut self, learn_rate: f64) {
-        for layer in self.layers.iter_mut() {
-            layer.weights -= &layer.weight_gradient * learn_rate;
-            layer.biases -= &layer.biase_gradient * learn_rate;
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use nalgebra::{Matrix3x2, Vector2, Vector3};
-    use rand::Rng;
-
-    #[test]
-    fn matrix_test() {
-        let mut rng = rand::thread_rng();
-        let mut generator = |_: usize, _: usize| rng.gen_range(0.0..=1.0);
-        fn sigmoid(val: &mut f64) {
-            *val = 1. / (1. + (-*val).exp())
-        }
-
-        let inputs = Vector2::from_fn(&mut generator);
-        let weights = Matrix3x2::from_fn(&mut generator);
-        let biases = Vector3::from_fn(&mut generator);
-
-        println!("{}", inputs);
-        println!("{}", weights);
-        println!("{}", biases);
-
-        let mut result = weights * inputs + biases;
-
-        println!("{}", result);
-        result.apply(&mut sigmoid);
-        println!("{}", result);
-        println!("{:.3}", result.transpose());
-
-        panic!()
     }
 }

@@ -1,8 +1,11 @@
 use indicatif::ProgressIterator;
 use nalgebra::{DMatrix, DVector};
 use rand::{seq::SliceRandom, Rng};
+use rand_distr::Distribution;
 use rayon::prelude::*;
 use std::{iter::zip, time::Instant};
+
+use crate::Activation;
 
 pub struct Network2 {
     num_layers: usize,
@@ -11,6 +14,8 @@ pub struct Network2 {
     weights: Vec<DMatrix<f32>>,
     weight_grad: Vec<DMatrix<f32>>,
     bias_grad: Vec<DVector<f32>>,
+    activation: Activation,
+    output_activation: Activation,
 }
 
 impl Network2 {
@@ -24,7 +29,15 @@ impl Network2 {
     /// layer is assumed to be an input layer, and by convention we
     /// won't set any biases for those neurons, since biases are only
     /// ever used in computing the outputs from later layers.
-    pub fn new(sizes: &[usize]) -> Self {
+    pub fn new<D>(
+        sizes: &[usize],
+        activation: Activation,
+        output_activation: Activation,
+        distr: D,
+    ) -> Self
+    where
+        D: Distribution<f32> + Copy,
+    {
         let mut rng = rand::rng();
         Self {
             num_layers: sizes.len(),
@@ -32,33 +45,19 @@ impl Network2 {
             biases: sizes
                 .iter()
                 .skip(1)
-                .map(|y| {
-                    DVector::from_fn(*y, |_, _| {
-                        // rng.sample::<f32, rand_distr::StandardUniform>(rand_distr::StandardUniform)
-                        //     * 2.
-                        //     - 1.
-
-                        rng.sample::<f32, rand_distr::StandardNormal>(rand_distr::StandardNormal)
-                    })
-                })
+                .map(|y| DVector::from_fn(*y, |_, _| rng.sample::<f32, D>(distr)))
                 .collect(),
 
             weights: zip(&sizes[..sizes.len() - 1], &sizes[1..])
-                .map(|(x, y)| {
-                    DMatrix::from_fn(*y, *x, |_, _| {
-                        // rng.sample::<f32, rand_distr::StandardUniform>(rand_distr::StandardUniform)
-                        //     * 2.
-                        //     - 1.
-
-                        rng.sample::<f32, rand_distr::StandardNormal>(rand_distr::StandardNormal)
-                    })
-                })
+                .map(|(x, y)| DMatrix::from_fn(*y, *x, |_, _| rng.sample::<f32, D>(distr)))
                 .collect(),
             bias_grad: sizes.iter().skip(1).map(|y| DVector::zeros(*y)).collect(),
 
             weight_grad: zip(&sizes[..sizes.len() - 1], &sizes[1..])
                 .map(|(x, y)| DMatrix::zeros(*y, *x))
                 .collect(),
+            activation,
+            output_activation,
         }
     }
 
@@ -70,9 +69,9 @@ impl Network2 {
             // a.apply(|v| *v = relu(*v));
 
             if i == self.biases.len() {
-                a.apply(O);
+                a.apply(self.output_activation.get_fun32());
             } else {
-                a.apply(A);
+                a.apply(self.activation.get_fun32());
             }
         }
 
@@ -202,9 +201,9 @@ impl Network2 {
             // activation = z.apply_into(A);
 
             if i == self.biases.len() {
-                z.apply(O);
+                z.apply(self.output_activation.get_fun32());
             } else {
-                z.apply(A)
+                z.apply(self.activation.get_fun32())
             }
             activations.push(z);
         }
@@ -216,8 +215,11 @@ impl Network2 {
         //     zs.last().unwrap().clone()
         // };
 
-        let mut delta = Self::cost_derivative(&activations.pop().unwrap(), y)
-            .component_mul(&zs.pop().unwrap().apply_into(O_PRIME));
+        let mut delta = Self::cost_derivative(&activations.pop().unwrap(), y).component_mul(
+            &zs.pop()
+                .unwrap()
+                .apply_into(self.output_activation.get_dir32()),
+        );
 
         // .component_mul(&zs.last().unwrap().clone().apply_into(|z| *z = relu(*z)));
         // .component_mul(&zs.last().unwrap().clone().apply_into(A_PRIME));
@@ -245,7 +247,7 @@ impl Network2 {
             // let z = zs[zs_len - l].clone();
             let z = zs.pop().unwrap();
             // let sp = z.apply_into(|z| *z = relu_prime(*z));
-            let sp = z.apply_into(A_PRIME);
+            let sp = z.apply_into(self.activation.get_dir32());
             delta = self.weights[w_len - l + 1]
                 .tr_mul(&delta)
                 .component_mul(&sp);
@@ -304,53 +306,4 @@ impl Network2 {
 
         (correct, loss)
     }
-}
-
-pub const A: fn(&mut f32) = |x: &mut f32| {
-    *x = sigmoid(*x);
-    // *x = tanh(*x);
-    // *x = relu(*x);
-};
-pub const A_PRIME: fn(&mut f32) = |x: &mut f32| {
-    *x = sigmoid_prime(*x);
-    // *x = tanh_prime(*x);
-    // *x = relu_prime(*x);
-};
-
-pub const O: fn(&mut f32) = |x: &mut f32| {
-    *x = sigmoid(*x);
-};
-
-pub const O_PRIME: fn(&mut f32) = |x: &mut f32| {
-    *x = sigmoid_prime(*x);
-};
-
-pub fn relu(x: f32) -> f32 {
-    f32::max(0.0, x)
-}
-
-pub fn relu_prime(x: f32) -> f32 {
-    if x >= 0.0 {
-        1.0
-    } else {
-        0.0
-    }
-}
-
-pub fn tanh(x: f32) -> f32 {
-    f32::tanh(x)
-}
-
-pub fn tanh_prime(x: f32) -> f32 {
-    1.0 - f32::tanh(x).powi(2)
-}
-
-/// The sigmoid function.
-pub fn sigmoid(z: f32) -> f32 {
-    1.0 / (1.0 + (-z).exp())
-}
-
-/// Derivative of the sigmoid function.
-pub fn sigmoid_prime(z: f32) -> f32 {
-    sigmoid(z) * (1.0 - sigmoid(z))
 }

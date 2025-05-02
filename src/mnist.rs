@@ -10,6 +10,42 @@ pub struct Mnist {
     pub training_labels: Vec<DVector<f64>>,
 }
 
+impl Mnist {
+    pub fn training_data_f64(&self) -> Vec<(DVector<f64>, DVector<f64>)> {
+        self.training_images
+            .clone()
+            .into_iter()
+            .zip(self.training_labels.clone())
+            .collect()
+    }
+
+    pub fn training_data_f32(&self) -> Vec<(DVector<f32>, DVector<f32>)> {
+        self.training_images
+            .clone()
+            .into_iter()
+            .zip(self.training_labels.clone())
+            .map(|(v1, v2)| (v1.map(|x| x as f32), v2.map(|x| x as f32)))
+            .collect()
+    }
+
+    pub fn test_data_f64(&self) -> Vec<(DVector<f64>, DVector<f64>)> {
+        self.test_images
+            .clone()
+            .into_iter()
+            .zip(self.test_labels.clone())
+            .collect()
+    }
+
+    pub fn test_data_f32(&self) -> Vec<(DVector<f32>, DVector<f32>)> {
+        self.test_images
+            .clone()
+            .into_iter()
+            .zip(self.test_labels.clone())
+            .map(|(v1, v2)| (v1.map(|x| x as f32), v2.map(|x| x as f32)))
+            .collect()
+    }
+}
+
 type UResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub fn read(path: impl ToString) -> UResult<Mnist> {
