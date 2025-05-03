@@ -1,8 +1,10 @@
 pub mod mnist;
 pub mod nn;
 pub mod nn_f32;
+pub mod parallel;
 
 #[repr(usize)]
+#[derive(Clone, Copy, Debug)]
 pub enum Activation {
     Sigmoid = 0,
     ReLU = 1,

@@ -3,13 +3,17 @@ use nalgebra::{DMatrix, DVector};
 use rand::{seq::SliceRandom, Rng};
 use rand_distr::Distribution;
 use rayon::prelude::*;
-use std::{iter::zip, time::Instant};
+use std::{iter::zip, sync::Arc, time::Instant};
 
-use crate::Activation;
+use crate::{
+    parallel::{Gradient, ThreadGrads},
+    Activation,
+};
 
-pub struct Network2 {
+pub struct Network {
     num_layers: usize,
-    _sizes: Vec<usize>,
+    sizes: Vec<usize>,
+    layers: Arc<Gradient<f32>>,
     biases: Vec<DVector<f32>>,
     weights: Vec<DMatrix<f32>>,
     weight_grad: Vec<DMatrix<f32>>,
@@ -18,7 +22,7 @@ pub struct Network2 {
     output_activation: Activation,
 }
 
-impl Network2 {
+impl Network {
     /// The list ``sizes`` contains the number of neurons in the
     /// respective layers of the network.  For example, if the list
     /// was [2, 3, 1] then it would be a three-layer network, with the
@@ -41,23 +45,22 @@ impl Network2 {
         let mut rng = rand::rng();
         Self {
             num_layers: sizes.len(),
-            _sizes: sizes.to_vec(),
+            sizes: sizes.to_vec(),
             biases: sizes
                 .iter()
                 .skip(1)
                 .map(|y| DVector::from_fn(*y, |_, _| rng.sample::<f32, D>(distr)))
                 .collect(),
 
-            weights: zip(&sizes[..sizes.len() - 1], &sizes[1..])
-                .map(|(x, y)| DMatrix::from_fn(*y, *x, |_, _| rng.sample::<f32, D>(distr)))
+            weights: std::iter::zip(&sizes[..sizes.len() - 1], &sizes[1..])
+                .map(|(x, y)| DMatrix::from_fn(*y, *x, |_, _| rng.sample(distr)))
                 .collect(),
-            bias_grad: sizes.iter().skip(1).map(|y| DVector::zeros(*y)).collect(),
+            bias_grad: Vec::new(),
 
-            weight_grad: zip(&sizes[..sizes.len() - 1], &sizes[1..])
-                .map(|(x, y)| DMatrix::zeros(*y, *x))
-                .collect(),
+            weight_grad: Vec::new(),
             activation,
             output_activation,
+            layers: Arc::new(Gradient::new()),
         }
     }
 
@@ -69,6 +72,22 @@ impl Network2 {
             // a.apply(|v| *v = relu(*v));
 
             if i == self.biases.len() {
+                a.apply(self.output_activation.get_fun32());
+            } else {
+                a.apply(self.activation.get_fun32());
+            }
+        }
+
+        a
+    }
+
+    pub fn feedforward_layers(&self, mut a: DVector<f32>) -> DVector<f32> {
+        for (i, (w, b)) in self.layers.iter().enumerate() {
+            a = w * a;
+            a += b;
+            // a.apply(|v| *v = relu(*v));
+
+            if i == self.layers.len() {
                 a.apply(self.output_activation.get_fun32());
             } else {
                 a.apply(self.activation.get_fun32());
@@ -108,6 +127,17 @@ impl Network2 {
 
         let mut rng = rand::rng();
 
+        self.bias_grad = self
+            .sizes
+            .iter()
+            .skip(1)
+            .map(|y| DVector::zeros(*y))
+            .collect();
+
+        self.weight_grad = zip(&self.sizes[..self.sizes.len() - 1], &self.sizes[1..])
+            .map(|(x, y)| DMatrix::zeros(*y, *x))
+            .collect();
+
         for j in 0..epochs {
             training_data.shuffle(&mut rng);
             let start = Instant::now();
@@ -119,6 +149,72 @@ impl Network2 {
 
             if test_data.is_some() {
                 let (correct, loss) = self.evaluate(test_data.as_ref().unwrap());
+                let len = test_data.as_ref().unwrap().len();
+
+                println!(
+                    "epoch {:>3}: {} / {}: {:#.3}%  loss: {:#.10}  time: {:#?}",
+                    j,
+                    correct,
+                    len,
+                    ((correct as f32) / (len as f32)) * 100.0,
+                    loss,
+                    start.elapsed()
+                );
+            } else {
+                println!("epoch {} complete", j);
+            }
+        }
+    }
+
+    pub fn sdg_par(
+        &mut self,
+        mut training_data: Vec<(DVector<f32>, DVector<f32>)>,
+        epochs: usize,
+        mini_batch_size: usize,
+        eta: f32,
+        test_data: Option<&[(DVector<f32>, DVector<f32>)]>,
+        threads: usize,
+    ) {
+        let style = indicatif::ProgressStyle::with_template(
+            "[{elapsed:.green}] [{wide_bar:.cyan/red}] {pos:.red}/{len:.green} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("=> ");
+
+        let n = training_data.len();
+
+        println!(
+            "Starting training:\n  epochs: {:>3}\n  mini_batch: {}\n  examples: {}",
+            epochs, mini_batch_size, n
+        );
+
+        self.layers = Arc::new(zip(self.weights.clone(), self.biases.clone()).collect());
+
+        let mut rng = rand::rng();
+
+        let mut thread_grads = ThreadGrads::new(&self.sizes, threads);
+
+        for j in 0..epochs {
+            training_data.shuffle(&mut rng);
+            let start = Instant::now();
+            let mini_batches = training_data.chunks(mini_batch_size);
+
+            for mini_batch in mini_batches.into_iter().progress_with_style(style.clone()) {
+                thread_grads.update_mini_batch(
+                    self.layers.clone(),
+                    self.activation,
+                    self.output_activation,
+                    Arc::from(mini_batch),
+                );
+
+                thread_grads.apply(
+                    Arc::get_mut(&mut self.layers).unwrap(),
+                    eta / mini_batch_size as f32,
+                );
+            }
+
+            if test_data.is_some() {
+                let (correct, loss) = self.evaluate_layers(test_data.as_ref().unwrap());
                 let len = test_data.as_ref().unwrap().len();
 
                 println!(
@@ -261,6 +357,8 @@ impl Network2 {
     /// Return the vector of partial derivatives \partial C_x /
     /// \partial a for the output activations.
     pub fn cost_derivative(output_activations: &DVector<f32>, y: &DVector<f32>) -> DVector<f32> {
+        // dbg!(output_activations.nrows(), output_activations.ncols());
+        // dbg!(y.nrows(), y.ncols());
         output_activations - y
     }
 
@@ -273,6 +371,45 @@ impl Network2 {
         let values = test_data
             .par_iter()
             .map(|(x, y)| (self.feedforward(x.clone()), y));
+
+        let loss = values
+            .clone()
+            .map(|(x, y)| {
+                (x - y)
+                    .apply_into(|z| {
+                        *z = z.powi(2);
+                    })
+                    .sum()
+            })
+            .sum::<f32>()
+            / (len as f32);
+
+        let correct = values
+            .map(|(x, y)| {
+                (
+                    x.iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                        .unwrap()
+                        .0,
+                    y.iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                        .unwrap()
+                        .0,
+                )
+            })
+            .filter(|(x, y)| *x == *y)
+            .count();
+
+        (correct, loss)
+    }
+
+    pub fn evaluate_layers(&self, test_data: &[(DVector<f32>, DVector<f32>)]) -> (usize, f32) {
+        let len = test_data.len();
+        let values = test_data
+            .par_iter()
+            .map(|(x, y)| (self.feedforward_layers(x.clone()), y));
 
         let loss = values
             .clone()
