@@ -14,7 +14,8 @@ fn main() {
     //     );
     // }
     let mut network = nn_f32::Network::new(
-        &[28 * 28, 512, 512, 128, 32, 16, 10],
+        &[28 * 28, 32, 16, 16, 10],
+        // &[28 * 28, 512, 128, 32, 16, 10],
         neural_network::Activation::Sigmoid,
         neural_network::Activation::Identity,
         rand_distr::StandardNormal,
@@ -24,6 +25,6 @@ fn main() {
 
     let test_data = data.test_data_f32();
 
-    network.sdg_par(training_data, 5, 64, 5e-1, Some(&test_data), 8);
-    // network.sdg(training_data, 5, 64, 5e-1, Some(&test_data));
+    // network.sdg_par(training_data, 50, 32, 1e-1, Some(&test_data), 4);
+    network.sdg(training_data, 50, 32, 1e-1, Some(&test_data));
 }

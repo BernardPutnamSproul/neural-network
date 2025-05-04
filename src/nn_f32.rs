@@ -1,17 +1,14 @@
 use crossbeam::sync::ShardedLock;
 use indicatif::ProgressIterator;
 use nalgebra::{DMatrix, DVector};
+use ndarray::AssignElem;
 use rand::{seq::SliceRandom, Rng};
 use rand_distr::Distribution;
 use rayon::prelude::*;
-use std::{
-    iter::zip,
-    sync::{Arc, RwLock},
-    time::Instant,
-};
+use std::{iter::zip, sync::Arc, time::Instant};
 
 use crate::{
-    parallel::{Gradient, ThreadGrads},
+    parallel::{Gradient, ParBatches, ThreadGrads},
     Activation,
 };
 
@@ -118,7 +115,7 @@ impl Network {
         test_data: Option<&[(DVector<f32>, DVector<f32>)]>,
     ) {
         let style = indicatif::ProgressStyle::with_template(
-            "[{elapsed:.green}] [{wide_bar:.cyan/red}] {pos:.red}/{len:.green} ({eta})",
+            "[{elapsed:.green}] [{bar:.cyan/red}] {percent_precise:.red}{%:.red} ({eta})",
         )
         .unwrap()
         .progress_chars("=> ");
@@ -181,7 +178,7 @@ impl Network {
         threads: usize,
     ) {
         let style = indicatif::ProgressStyle::with_template(
-            "[{elapsed:.green}] [{wide_bar:.cyan/red}] {pos:.red}/{len:.green} ({eta})",
+            "[{elapsed:.green}] [{bar:.cyan/red}] {percent_precise:.red}{%:.red} ({eta})",
         )
         .unwrap()
         .progress_chars("=> ");
@@ -199,7 +196,16 @@ impl Network {
 
         let mut rng = rand::rng();
 
-        let mut thread_grads = ThreadGrads::new(
+        // let mut thread_grads = ThreadGrads::new(
+        //     &self.sizes,
+        //     threads,
+        //     self.layers.clone(),
+        //     self.activation,
+        //     self.output_activation,
+        // );
+
+        // thread_grads.initialize_threads();
+        let mut parallel = ParBatches::new(
             &self.sizes,
             threads,
             self.layers.clone(),
@@ -207,18 +213,21 @@ impl Network {
             self.output_activation,
         );
 
-        thread_grads.initialize_threads();
-
         for j in 0..epochs {
             training_data.shuffle(&mut rng);
             let start = Instant::now();
-            let mini_batches = training_data.chunks(mini_batch_size);
+            parallel.run(
+                eta / mini_batch_size as f32,
+                mini_batch_size,
+                Arc::from(training_data.as_slice()),
+            );
+            // let mini_batches = training_data.chunks(mini_batch_size);
 
-            for mini_batch in mini_batches.into_iter().progress_with_style(style.clone()) {
-                thread_grads.update_mini_batch(Arc::from(mini_batch));
+            // for mini_batch in mini_batches.into_iter().progress_with_style(style.clone()) {
+            //     thread_grads.update_mini_batch(Arc::from(mini_batch));
 
-                thread_grads.apply(eta / mini_batch_size as f32);
-            }
+            //     thread_grads.apply(eta / mini_batch_size as f32);
+            // }
 
             if test_data.is_some() {
                 let (correct, loss) = self.evaluate_layers(test_data.as_ref().unwrap());
