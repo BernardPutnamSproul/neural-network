@@ -1,9 +1,14 @@
+use crossbeam::sync::ShardedLock;
 use indicatif::ProgressIterator;
 use nalgebra::{DMatrix, DVector};
 use rand::{seq::SliceRandom, Rng};
 use rand_distr::Distribution;
 use rayon::prelude::*;
-use std::{iter::zip, sync::Arc, time::Instant};
+use std::{
+    iter::zip,
+    sync::{Arc, RwLock},
+    time::Instant,
+};
 
 use crate::{
     parallel::{Gradient, ThreadGrads},
@@ -13,7 +18,7 @@ use crate::{
 pub struct Network {
     num_layers: usize,
     sizes: Vec<usize>,
-    layers: Arc<Gradient<f32>>,
+    layers: Arc<ShardedLock<Gradient<f32>>>,
     biases: Vec<DVector<f32>>,
     weights: Vec<DMatrix<f32>>,
     weight_grad: Vec<DMatrix<f32>>,
@@ -60,7 +65,7 @@ impl Network {
             weight_grad: Vec::new(),
             activation,
             output_activation,
-            layers: Arc::new(Gradient::new()),
+            layers: Arc::new(ShardedLock::new(Gradient::new())),
         }
     }
 
@@ -82,12 +87,12 @@ impl Network {
     }
 
     pub fn feedforward_layers(&self, mut a: DVector<f32>) -> DVector<f32> {
-        for (i, (w, b)) in self.layers.iter().enumerate() {
+        for (i, (w, b)) in self.layers.read().unwrap().iter().enumerate() {
             a = w * a;
             a += b;
             // a.apply(|v| *v = relu(*v));
 
-            if i == self.layers.len() {
+            if i == self.num_layers - 1 {
                 a.apply(self.output_activation.get_fun32());
             } else {
                 a.apply(self.activation.get_fun32());
@@ -188,11 +193,21 @@ impl Network {
             epochs, mini_batch_size, n
         );
 
-        self.layers = Arc::new(zip(self.weights.clone(), self.biases.clone()).collect());
+        self.layers = Arc::new(ShardedLock::new(
+            zip(self.weights.clone(), self.biases.clone()).collect(),
+        ));
 
         let mut rng = rand::rng();
 
-        let mut thread_grads = ThreadGrads::new(&self.sizes, threads);
+        let mut thread_grads = ThreadGrads::new(
+            &self.sizes,
+            threads,
+            self.layers.clone(),
+            self.activation,
+            self.output_activation,
+        );
+
+        thread_grads.initialize_threads();
 
         for j in 0..epochs {
             training_data.shuffle(&mut rng);
@@ -200,17 +215,9 @@ impl Network {
             let mini_batches = training_data.chunks(mini_batch_size);
 
             for mini_batch in mini_batches.into_iter().progress_with_style(style.clone()) {
-                thread_grads.update_mini_batch(
-                    self.layers.clone(),
-                    self.activation,
-                    self.output_activation,
-                    Arc::from(mini_batch),
-                );
+                thread_grads.update_mini_batch(Arc::from(mini_batch));
 
-                thread_grads.apply(
-                    Arc::get_mut(&mut self.layers).unwrap(),
-                    eta / mini_batch_size as f32,
-                );
+                thread_grads.apply(eta / mini_batch_size as f32);
             }
 
             if test_data.is_some() {
